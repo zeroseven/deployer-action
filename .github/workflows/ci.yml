@@ -36,14 +36,13 @@ jobs:
       - name: Run linter
         run: npm run lint
 
-      - name: Package action
-        run: npm run package
-
       - name: Verify dist is up-to-date
         run: |
+          npm run package
           if [ -n "$(git status --porcelain dist/)" ]; then
             echo "Error: dist/ directory is not up-to-date"
             echo "Please run 'npm run package' and commit the changes"
             git status --porcelain dist/
             exit 1
           fi
+          echo "✓ dist/ is up-to-date"
