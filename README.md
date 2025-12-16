@@ -219,7 +219,17 @@ We welcome contributions! To set up a local dev environment:
    - Keep changes focused; separate functional changes from formatting when possible
 
 7. Releasing
-   - Create a release and move the `v1` tag to the new commit if following semver major tagging.
+   - Automated via semantic-release. Use Conventional Commits in PR titles and merge commits (e.g., `fix:`, `feat:`, `docs:`). On push to `main` or manual trigger, the workflow will:
+     - analyze commits and determine the next version (patch/minor/major),
+     - create a Git tag like `v1.0.1` and a GitHub Release with notes,
+     - update the floating major tag (e.g., `v1`) to the new release.
+   - Manual run: Go to Actions → “Release” → Run workflow.
+   - Local dry run (optional): `npm run release -- --dry-run` (requires repository access token in env if testing outside CI).
+
+   Conventional Commits quick ref:
+   - `fix:` → patch
+   - `feat:` → minor
+   - `feat!` or `fix!:`, or `BREAKING CHANGE:` footer → major
 
 ---
 

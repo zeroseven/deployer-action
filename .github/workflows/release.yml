@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Optional: ensure dist/ is up-to-date; assumes dist is committed by PRs
+      - name: Build action (ncc)
+        run: npm run package
+
+      - name: Run semantic-release
+        id: sr
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          dry_run: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update floating major tag (v1)
+        if: steps.sr.outputs.new_release_published == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: ${{ steps.sr.outputs.new_release_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          MAJOR=v${NEW_TAG%%.*}
+          echo "New version: $NEW_TAG; Major tag to update: $MAJOR"
+          # Fetch tags
+          git fetch --tags --force
+          # Ensure the version tag exists locally
+          git checkout -qf "v${NEW_TAG}"
+          # Move the major tag to this commit
+          git tag -f "$MAJOR" "v${NEW_TAG}"
+          git push origin ":refs/tags/$MAJOR" || true
+          git push origin "refs/tags/$MAJOR"
