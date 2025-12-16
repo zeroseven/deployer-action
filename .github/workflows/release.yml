@@ -44,17 +44,17 @@ jobs:
         if: steps.sr.outputs.new_release_published == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_TAG: ${{ steps.sr.outputs.new_release_version }}
+          NEW_TAG: ${{ steps.sr.outputs.new_release_git_tag }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          MAJOR=v${NEW_TAG%%.*}
+          MAJOR=${NEW_TAG%%.*}
           echo "New version: $NEW_TAG; Major tag to update: $MAJOR"
           # Fetch tags
           git fetch --tags --force
           # Ensure the version tag exists locally
-          git checkout -qf "v${NEW_TAG}"
+          git checkout -qf "${NEW_TAG}"
           # Move the major tag to this commit
-          git tag -f "$MAJOR" "v${NEW_TAG}"
+          git tag -f "$MAJOR" "${NEW_TAG}"
           git push origin ":refs/tags/$MAJOR" || true
           git push origin "refs/tags/$MAJOR"
