@@ -1,3 +1,57 @@
 name: 'zeroseven/deployer-action'
 description: 'Composite GitHub Action for deploying PHP projects using Deployer with SSH'
 author: 'Jens Schaller'
+
+inputs:
+  ssh-private-key:
+    description: 'SSH private key'
+    required: true
+
+  environment:
+    description: 'Deployment environment (staging, testing, production)'
+    required: true
+
+  revision:
+    description: 'Git revision hash'
+    required: true
+
+  deployer-binary:
+    description: 'Path to Deployer binary'
+    required: false
+    default: 'vendor/bin/dep'
+
+  ssh-known-hosts:
+    description: 'SSH known hosts content (recommended for security)'
+    required: false
+    default: ''
+
+  ssh-port:
+    description: 'SSH port to use'
+    required: false
+    default: '22'
+
+  working-directory:
+    description: 'Working directory where deploy.php is located'
+    required: false
+    default: '.'
+
+  verbosity:
+    description: 'Deployer verbosity level (v, vv, vvv)'
+    required: false
+    default: 'vv'
+
+  options:
+    description: 'Additional Deployer options (e.g., "--parallel --limit=10")'
+    required: false
+    default: ''
+
+outputs:
+  deployment-status:
+    description: 'Deployment status (success or failed)'
+
+  deployer-output:
+    description: 'Full output from Deployer command'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
