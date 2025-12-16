@@ -26,6 +26,49 @@ const log = {
   title: (msg: string) => core.info(`${colors.cyan}${colors.bright}${msg}${colors.reset}`)
 }
 
+// Parse shell-like arguments handling quoted strings
+function parseShellArgs(input: string): string[] {
+  const args: string[] = []
+  let current = ''
+  let inQuote = false
+  let quoteChar = ''
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i]
+
+    if ((char === '"' || char === "'") && !inQuote) {
+      inQuote = true
+      quoteChar = char
+    } else if (char === quoteChar && inQuote) {
+      inQuote = false
+      quoteChar = ''
+    } else if (char === ' ' && !inQuote) {
+      if (current) {
+        args.push(current)
+        current = ''
+      }
+    } else {
+      current += char
+    }
+  }
+
+  if (current) {
+    args.push(current)
+  }
+
+  return args
+}
+
+// Validate that a path is within a base directory (prevent path traversal)
+function validatePathWithinBase(basePath: string, targetPath: string): void {
+  const resolvedBase = path.resolve(basePath)
+  const resolvedTarget = path.resolve(basePath, targetPath)
+
+  if (!resolvedTarget.startsWith(resolvedBase)) {
+    throw new Error(`Path '${targetPath}' is outside the working directory`)
+  }
+}
+
 interface ActionInputs {
   sshPrivateKey: string
   environment: string
@@ -36,6 +79,7 @@ interface ActionInputs {
   workingDirectory: string
   verbosity: string
   options: string
+  timeout: string
 }
 
 async function getInputs(): Promise<ActionInputs> {
@@ -48,17 +92,20 @@ async function getInputs(): Promise<ActionInputs> {
     sshPort: core.getInput('ssh-port'),
     workingDirectory: core.getInput('working-directory'),
     verbosity: core.getInput('verbosity'),
-    options: core.getInput('options')
+    options: core.getInput('options'),
+    timeout: core.getInput('timeout')
   }
 }
 
-async function setupSSH(privateKey: string, knownHosts: string, port: string): Promise<void> {
+async function setupSSH(privateKey: string, knownHosts: string, port: string): Promise<string> {
   core.startGroup('Setting up SSH')
 
   const sshDir = path.join(os.homedir(), '.ssh')
-  const privateKeyPath = path.join(sshDir, 'id_rsa')
-  const knownHostsPath = path.join(sshDir, 'known_hosts')
-  const configPath = path.join(sshDir, 'config')
+  const tmpDir = os.tmpdir()
+  const privateKeyPath = path.join(sshDir, 'deployer_action_key')
+  const knownHostsPath = path.join(sshDir, 'deployer_action_known_hosts')
+  const configPath = path.join(tmpDir, `ssh_config_deployer_${Date.now()}`)
+  const controlPath = path.join(tmpDir, 'ssh_mux_%h_%p_%r')
 
   // Create .ssh directory
   await io.mkdirP(sshDir)
@@ -76,14 +123,14 @@ async function setupSSH(privateKey: string, knownHosts: string, port: string): P
     log.warning('No known_hosts provided. Using StrictHostKeyChecking=no (not recommended for production)')
   }
 
-  // Create SSH config with multiplexing for performance
+  // Create temporary SSH config with multiplexing for performance
   const sshConfig = `Host *
   StrictHostKeyChecking ${knownHosts ? 'yes' : 'no'}
   UserKnownHostsFile ${knownHosts ? knownHostsPath : '/dev/null'}
   IdentityFile ${privateKeyPath}
   Port ${port}
   ControlMaster auto
-  ControlPath /tmp/ssh_mux_%h_%p_%r
+  ControlPath ${controlPath}
   ControlPersist 600
   ServerAliveInterval 60
   ServerAliveCountMax 3
@@ -91,39 +138,61 @@ async function setupSSH(privateKey: string, knownHosts: string, port: string): P
   await fs.writeFile(configPath, sshConfig, { mode: 0o600 })
   log.success('SSH config created with connection multiplexing')
 
+  // Export SSH config path for use in deployment
+  core.exportVariable('GIT_SSH_COMMAND', `ssh -F ${configPath}`)
+
   // Start ssh-agent and add key
-  const agentOutput = await exec.getExecOutput('ssh-agent', ['-s'])
+  const agentOutput = await exec.getExecOutput('ssh-agent', ['-s'], { silent: true })
 
-  // Parse SSH_AUTH_SOCK and SSH_AGENT_PID from output
-  const authSockMatch = agentOutput.stdout.match(/SSH_AUTH_SOCK=([^;]+)/)
-  const agentPidMatch = agentOutput.stdout.match(/SSH_AGENT_PID=([^;]+)/)
+  // Parse SSH_AUTH_SOCK and SSH_AGENT_PID from output with better error handling
+  const authSockMatch = agentOutput.stdout.match(/SSH_AUTH_SOCK=([^;\s]+)/)
+  const agentPidMatch = agentOutput.stdout.match(/SSH_AGENT_PID=([^;\s]+)/)
 
-  if (authSockMatch) {
-    core.exportVariable('SSH_AUTH_SOCK', authSockMatch[1])
+  if (!authSockMatch || !agentPidMatch) {
+    throw new Error('Failed to parse ssh-agent output. Could not extract SSH_AUTH_SOCK or SSH_AGENT_PID.')
   }
-  if (agentPidMatch) {
-    core.exportVariable('SSH_AGENT_PID', agentPidMatch[1])
-  }
+
+  core.exportVariable('SSH_AUTH_SOCK', authSockMatch[1])
+  core.exportVariable('SSH_AGENT_PID', agentPidMatch[1])
 
   // Add the key to ssh-agent
   await exec.exec('ssh-add', [privateKeyPath])
   log.success('SSH agent started and key added')
 
   core.endGroup()
+
+  // Return config path for cleanup
+  return configPath
 }
 
 async function verifyDeployerBinary(binaryPath: string, workingDir: string): Promise<void> {
   core.startGroup('Verifying Deployer')
 
+  // Validate path is within working directory
+  validatePathWithinBase(workingDir, binaryPath)
+
   const fullPath = path.join(workingDir, binaryPath)
 
-  // Check if file exists and make it executable if needed
+  // Check if file exists first
+  try {
+    await fs.access(fullPath, fs.constants.F_OK)
+  } catch {
+    throw new Error(
+      `Deployer binary not found at '${binaryPath}'. ` +
+        `Make sure Deployer is installed via Composer or provide the correct path.`
+    )
+  }
+
+  // Check if file is executable, make it executable if needed
   try {
     await fs.access(fullPath, fs.constants.X_OK)
   } catch {
-    // Try to make it executable
     log.info(`Making ${binaryPath} executable...`)
-    await fs.chmod(fullPath, 0o755)
+    try {
+      await fs.chmod(fullPath, 0o755)
+    } catch (chmodError) {
+      throw new Error(`Failed to make ${binaryPath} executable: ${chmodError}`)
+    }
   }
 
   // Verify Deployer works
@@ -135,7 +204,7 @@ async function verifyDeployerBinary(binaryPath: string, workingDir: string): Pro
   if (exitCode !== 0 || !stdout) {
     throw new Error(
       `Failed to verify Deployer binary at '${binaryPath}'. ` +
-        `Make sure Deployer is installed via Composer or provide the correct path.`
+        `The binary exists but could not be executed. Exit code: ${exitCode}`
     )
   }
 
@@ -149,29 +218,44 @@ async function runDeployment(
   revision: string,
   workingDir: string,
   verbosity: string,
-  options: string
+  options: string,
+  timeoutMs?: number
 ): Promise<string> {
   core.startGroup(`Deploying to ${environment}`)
 
   let deployerOutput = ''
   const args = ['deploy', environment, `--revision=${revision}`]
 
-  // Add verbosity flag
-  if (verbosity && !args.includes('-v') && !args.includes('-vv') && !args.includes('-vvv')) {
+  // Add verbosity flag (simplified check - args is newly created so no duplicates possible)
+  if (verbosity) {
     args.push(`-${verbosity}`)
   }
 
-  // Add additional options
+  // Add additional options with proper quote handling
   if (options) {
-    args.push(...options.split(' ').filter(opt => opt.trim()))
+    const parsedOptions = parseShellArgs(options)
+    args.push(...parsedOptions)
   }
 
   log.info(`Executing: ${deployerBinary} ${args.join(' ')}`)
   log.info(`Environment: ${environment}`)
   log.info(`Revision: ${revision}`)
   log.info(`Working directory: ${workingDir}`)
+  if (timeoutMs) {
+    log.info(`Timeout: ${timeoutMs}ms`)
+  }
 
-  const exitCode = await exec.exec(deployerBinary, args, {
+  // Setup timeout handling
+  let timeoutHandle: NodeJS.Timeout | undefined
+  const timeoutPromise = timeoutMs
+    ? new Promise<number>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`Deployment timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+      })
+    : null
+
+  const execPromise = exec.exec(deployerBinary, args, {
     cwd: workingDir,
     ignoreReturnCode: true,
     listeners: {
@@ -188,6 +272,15 @@ async function runDeployment(
     }
   })
 
+  let exitCode: number
+  try {
+    exitCode = timeoutPromise ? await Promise.race([execPromise, timeoutPromise]) : await execPromise
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+    }
+  }
+
   if (exitCode !== 0) {
     core.endGroup()
     throw new Error(`Deployer command failed with exit code ${exitCode}`)
@@ -199,11 +292,13 @@ async function runDeployment(
   return deployerOutput
 }
 
-async function cleanupSSH(): Promise<void> {
+async function cleanupSSH(configPath?: string): Promise<void> {
   core.startGroup('Cleaning up SSH')
 
   const sshDir = path.join(os.homedir(), '.ssh')
-  const privateKeyPath = path.join(sshDir, 'id_rsa')
+  const tmpDir = os.tmpdir()
+  const privateKeyPath = path.join(sshDir, 'deployer_action_key')
+  const knownHostsPath = path.join(sshDir, 'deployer_action_known_hosts')
 
   // Remove private key
   try {
@@ -213,12 +308,30 @@ async function cleanupSSH(): Promise<void> {
     core.debug(`Could not remove private key: ${error}`)
   }
 
+  // Remove known hosts file
+  try {
+    await fs.unlink(knownHostsPath)
+    core.debug('Removed known hosts file')
+  } catch (error) {
+    core.debug(`Could not remove known hosts file: ${error}`)
+  }
+
+  // Remove temporary SSH config
+  if (configPath) {
+    try {
+      await fs.unlink(configPath)
+      log.success('Removed temporary SSH config')
+    } catch (error) {
+      core.debug(`Could not remove SSH config: ${error}`)
+    }
+  }
+
   // Remove SSH control sockets
   try {
-    const tmpFiles = await fs.readdir('/tmp')
+    const tmpFiles = await fs.readdir(tmpDir)
     const controlSockets = tmpFiles.filter(f => f.startsWith('ssh_mux_'))
     for (const socket of controlSockets) {
-      await fs.unlink(path.join('/tmp', socket)).catch(() => {})
+      await fs.unlink(path.join(tmpDir, socket)).catch(() => {})
     }
     if (controlSockets.length > 0) {
       log.success(`Removed ${controlSockets.length} SSH control socket(s)`)
@@ -242,6 +355,8 @@ async function cleanupSSH(): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  let sshConfigPath: string | undefined
+
   try {
     const inputs = await getInputs()
 
@@ -249,10 +364,16 @@ async function run(): Promise<void> {
     log.info(`Revision: ${inputs.revision}`)
 
     // Setup SSH
-    await setupSSH(inputs.sshPrivateKey, inputs.sshKnownHosts, inputs.sshPort)
+    sshConfigPath = await setupSSH(inputs.sshPrivateKey, inputs.sshKnownHosts, inputs.sshPort)
 
     // Verify Deployer binary
     await verifyDeployerBinary(inputs.deployerBinary, inputs.workingDirectory)
+
+    // Parse timeout value
+    const timeoutMs = inputs.timeout ? parseInt(inputs.timeout, 10) : undefined
+    if (timeoutMs && (isNaN(timeoutMs) || timeoutMs <= 0)) {
+      throw new Error(`Invalid timeout value: ${inputs.timeout}. Must be a positive number in milliseconds.`)
+    }
 
     // Run deployment
     const output = await runDeployment(
@@ -261,7 +382,8 @@ async function run(): Promise<void> {
       inputs.revision,
       inputs.workingDirectory,
       inputs.verbosity,
-      inputs.options
+      inputs.options,
+      timeoutMs
     )
 
     // Set outputs
@@ -269,7 +391,7 @@ async function run(): Promise<void> {
     core.setOutput('deployer-output', output)
 
     // Cleanup
-    await cleanupSSH()
+    await cleanupSSH(sshConfigPath)
 
     log.success('Deployment completed successfully!')
   } catch (error) {
@@ -279,7 +401,7 @@ async function run(): Promise<void> {
 
     // Ensure cleanup even on failure
     try {
-      await cleanupSSH()
+      await cleanupSSH(sshConfigPath)
     } catch (cleanupError) {
       core.debug(`Cleanup error: ${cleanupError}`)
     }

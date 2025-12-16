@@ -45,6 +45,11 @@ inputs:
     required: false
     default: ''
 
+  timeout:
+    description: 'Deployment timeout in milliseconds (e.g., 600000 for 10 minutes)'
+    required: false
+    default: ''
+
 outputs:
   deployment-status:
     description: 'Deployment status (success or failed)'
