@@ -12,6 +12,8 @@ node_modules/
 # Build output
 lib/
 # Note: dist/ is intentionally committed for GitHub Actions
+# Exclude declaration maps as they contain environment-specific paths
+dist/*.d.ts.map
 
 # Logs
 *.log
