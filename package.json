@@ -1,0 +1,40 @@
+{
+  "name": "deployer-action",
+  "version": "1.0.0",
+  "description": "GitHub Action for deploying PHP projects using Deployer with SSH",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "format": "prettier --write '**/*.ts'",
+    "format-check": "prettier --check '**/*.ts'",
+    "lint": "eslint src/**/*.ts",
+    "package": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "all": "npm run build && npm run format && npm run package"
+  },
+  "keywords": [
+    "actions",
+    "github",
+    "deployer",
+    "php",
+    "deployment",
+    "ssh"
+  ],
+  "private": true,
+  "author": "Jens Schaller",
+  "devDependencies": {
+    "@types/node": "^25.0.2",
+    "@typescript-eslint/eslint-plugin": "^8.50.0",
+    "@typescript-eslint/parser": "^8.50.0",
+    "@vercel/ncc": "^0.38.4",
+    "eslint": "^9.39.2",
+    "eslint-plugin-github": "^6.0.0",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@actions/core": "^2.0.1",
+    "@actions/exec": "^2.0.0",
+    "@actions/io": "^2.0.0",
+    "@actions/tool-cache": "^2.0.2"
+  }
+}
