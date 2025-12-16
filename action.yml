@@ -38,7 +38,7 @@ inputs:
   verbosity:
     description: 'Deployer verbosity level (v, vv, vvv)'
     required: false
-    default: 'vv'
+    default: ''
 
   options:
     description: 'Additional Deployer options (e.g., "--parallel --limit=10")'
